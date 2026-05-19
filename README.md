@@ -1,27 +1,142 @@
 # Mobile Detect
 
-Android CameraX demo for detecting people with a YOLO model, then classifying each detected person with either the helmet classifier or reflective-vest classifier.
+一个基于 Android CameraX 和 ONNX Runtime 的移动端实时检测应用。
 
-## What It Does
+应用可以使用手机摄像头进行实时画面分析，先通过 YOLO 检测人员，再对人员区域进行安全帽或反光衣分类判断。也可以切换到标准 YOLO11n 检测模型，按 COCO 内置类别进行通用目标检测。
 
-- Opens the rear camera.
-- Runs `person_detector.onnx` and keeps detections whose class is `person`.
-- Crops each detected person and runs the selected classifier:
-  - `helmet_classifier.onnx`: red box for `Nohelmet`.
-  - `vest_classifier.onnx`: red box for `Novest`.
-- Can switch to `standard_detector.onnx`, exported from `yolo11n.pt`, and choose one of the built-in COCO detection classes.
-- Draws compliant/other people with blue boxes and violations with red boxes.
-- Provides top dropdowns for switching the detector model, safety classifier, and standard-model class.
+## 主要功能
 
-## Project Layout
+- 使用手机摄像头实时预览和推理。
+- 支持后置主摄像头和前置摄像头切换。
+- 支持双指手势缩放镜头，并在右下角显示当前缩放倍率。
+- 支持左侧可收拉设置栏，收起后只显示“设置”按钮。
+- 使用人员检测模型 `person_detector.onnx` 检测人员。
+- 对检测到的人员进行二次分类：
+  - `helmet_classifier.onnx`：判断是否未戴安全帽。
+  - `vest_classifier.onnx`：判断是否未穿反光衣。
+- 支持切换到标准检测模型 `standard_detector.onnx`。
+- 支持选择 YOLO11n 的 COCO 内置检测类别。
+- 支持手动选择新的 ONNX 检测模型文件。
+- 正常目标使用蓝色框显示。
+- 未戴安全帽、未穿反光衣等违规目标使用红色框显示。
 
-- `models/*.pt`: original Ultralytics training checkpoints.
-- `models/*.onnx`: exported ONNX models.
-- `app/src/main/assets/*.onnx`: ONNX models loaded by the Android app.
-- `app/src/main/java/com/example/mobiledetect`: CameraX, ONNX Runtime, preprocessing, postprocessing, and overlay code.
+## 内置模型
 
-## Build
+App 当前内置以下 ONNX 模型：
 
-Open this folder in Android Studio, let Gradle sync, then run the `app` configuration on a physical Android device with a camera.
+- `app/src/main/assets/person_detector.onnx`
+  - 人员检测模型。
+  - 当前人员类别 ID 为 `4`。
 
-The local machine used to create the project does not have `gradle` or `ANDROID_HOME` configured, so command-line build verification was not available here.
+- `app/src/main/assets/helmet_classifier.onnx`
+  - 安全帽分类模型。
+  - `Nohelmet` 会被视为违规。
+
+- `app/src/main/assets/vest_classifier.onnx`
+  - 反光衣分类模型。
+  - `Novest` 会被视为违规。
+
+- `app/src/main/assets/standard_detector.onnx`
+  - 由 `yolo11n.pt` 导出的标准 YOLO11n 检测模型。
+  - 支持 COCO 80 类目标检测。
+
+## 自定义模型
+
+侧边栏中可以点击“选择 ONNX 检测模型”手动选择新的检测模型。
+
+注意事项：
+
+- 当前只支持 ONNX 检测模型。
+- `.pt` 训练权重需要先导出为 ONNX。
+- 推荐导出检测模型时使用 `imgsz=640`。
+- 自定义模型需要是 YOLO 检测输出格式。
+- 当前自定义模型的类别下拉仍沿用 COCO 80 类；如果模型类别不是 COCO，需要后续扩展类别配置。
+
+推荐导出命令：
+
+```bash
+yolo export model=your_model.pt format=onnx imgsz=640 opset=12 simplify=False dynamic=False
+```
+
+分类模型建议导出为：
+
+```bash
+yolo export model=your_classifier.pt format=onnx imgsz=320 opset=12 simplify=False dynamic=False
+```
+
+## 项目结构
+
+```text
+app/src/main/java/com/example/mobiledetect/
+├── MainActivity.java      # UI、相机、侧边栏、手势缩放、自定义模型选择
+├── ModelRunner.java       # 模型加载、ONNX 推理、YOLO 后处理、分类判断
+├── OverlayView.java       # 检测框绘制
+├── ImageUtils.java        # CameraX 图像转换
+└── Detection.java         # 检测结果数据结构
+```
+
+其他重要文件：
+
+- `DETECTION_LOGIC.md`
+  - 详细说明模型检测逻辑和后续业务规则扩展方式。
+
+- `export_onnx.py`
+  - 本地模型导出辅助脚本。
+
+- `app/src/main/assets/`
+  - App 实际加载的 ONNX 模型资源。
+
+## 检测逻辑入口
+
+核心检测逻辑在：
+
+```text
+app/src/main/java/com/example/mobiledetect/ModelRunner.java
+```
+
+主要入口：
+
+- `runSafety(...)`
+  - 人员检测 + 安全帽/反光衣分类。
+
+- `runStandard(...)`
+  - 标准 YOLO11n 检测。
+
+- `runCustom(...)`
+  - 用户手动选择的 ONNX 检测模型。
+
+如果后续要增加“人员过于密集”“进入危险区域”“车辆靠近人员”等业务规则，优先阅读：
+
+```text
+DETECTION_LOGIC.md
+```
+
+## 构建运行
+
+1. 使用 Android Studio 打开项目根目录。
+
+```text
+D:\work\codex\mobile_detect
+```
+
+2. 等待 Gradle Sync 完成。
+
+3. 连接 Android 真机。
+
+4. 手机开启开发者模式和 USB 调试。
+
+5. 在 Android Studio 中选择手机设备，点击 Run。
+
+## 运行环境
+
+- Android Studio
+- Android Gradle Plugin 8.5.2
+- CameraX 1.4.1
+- ONNX Runtime Android 1.20.0
+- minSdk 26
+- targetSdk 35
+
+## 作者
+
+- Pyrrhus
+- zhangxuefeng@batonsoft.com

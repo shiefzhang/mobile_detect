@@ -16,6 +16,9 @@
   - `vest_classifier.onnx`：判断是否未穿反光衣。
 - 支持切换到标准检测模型 `standard_detector.onnx`。
 - 支持选择 YOLO11n 的 COCO 内置检测类别。
+- 支持 YOLO11n 实例分割模型 `seg_detector.onnx`。
+- 支持 YOLO11n 旋转框模型 `obb_detector.onnx`。
+- 支持 YOLO11n 姿态估计模型 `pose_detector.onnx`。
 - 支持手动选择新的 ONNX 检测模型文件。
 - 正常目标使用蓝色框显示。
 - 未戴安全帽、未穿反光衣等违规目标使用红色框显示。
@@ -39,6 +42,20 @@ App 当前内置以下 ONNX 模型：
 - `app/src/main/assets/standard_detector.onnx`
   - 由 `yolo11n.pt` 导出的标准 YOLO11n 检测模型。
   - 支持 COCO 80 类目标检测。
+
+- `app/src/main/assets/seg_detector.onnx`
+  - YOLO11n 实例分割模型。
+  - 支持 COCO 80 类。
+  - App 会绘制检测框和半透明分割区域。
+
+- `app/src/main/assets/obb_detector.onnx`
+  - YOLO11n OBB 旋转框模型。
+  - 支持 DOTA 类别。
+  - App 会绘制旋转四边形。
+
+- `app/src/main/assets/pose_detector.onnx`
+  - YOLO11n Pose 姿态估计模型。
+  - App 会绘制人体检测框、关键点和骨架。
 
 ## 自定义模型
 
@@ -101,6 +118,15 @@ app/src/main/java/com/example/mobiledetect/ModelRunner.java
 
 - `runStandard(...)`
   - 标准 YOLO11n 检测。
+
+- `runSegment(...)`
+  - YOLO11n 实例分割检测。
+
+- `runObb(...)`
+  - YOLO11n 旋转框检测。
+
+- `runPose(...)`
+  - YOLO11n 姿态估计。
 
 - `runCustom(...)`
   - 用户手动选择的 ONNX 检测模型。

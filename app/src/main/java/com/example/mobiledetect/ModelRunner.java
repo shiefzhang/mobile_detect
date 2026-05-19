@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PointF;
 import android.graphics.RectF;
 
 import java.io.File;
@@ -27,7 +28,7 @@ final class ModelRunner implements AutoCloseable {
     }
 
     enum DetectorMode {
-        SAFETY, STANDARD, CUSTOM
+        SAFETY, STANDARD, SEGMENT, OBB, POSE, CUSTOM
     }
 
     private static final int DETECTOR_SIZE = 640;
@@ -50,14 +51,26 @@ final class ModelRunner implements AutoCloseable {
             "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
             "toothbrush"
     };
+    static final String[] OBB_NAMES = {
+            "plane", "ship", "storage tank", "baseball diamond", "tennis court",
+            "basketball court", "ground track field", "harbor", "bridge",
+            "large vehicle", "small vehicle", "helicopter", "roundabout",
+            "soccer ball field", "swimming pool"
+    };
 
     private final OrtEnvironment env;
     private final OrtSession detector;
     private final OrtSession standardDetector;
+    private final OrtSession segDetector;
+    private final OrtSession obbDetector;
+    private final OrtSession poseDetector;
     private final OrtSession helmetClassifier;
     private final OrtSession vestClassifier;
     private final String detectorInput;
     private final String standardDetectorInput;
+    private final String segDetectorInput;
+    private final String obbDetectorInput;
+    private final String poseDetectorInput;
     private final String helmetInput;
     private final String vestInput;
     private OrtSession customDetector;
@@ -69,10 +82,16 @@ final class ModelRunner implements AutoCloseable {
         options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
         detector = createSession(context, options, "person_detector.onnx");
         standardDetector = createSession(context, options, "standard_detector.onnx");
+        segDetector = createSession(context, options, "seg_detector.onnx");
+        obbDetector = createSession(context, options, "obb_detector.onnx");
+        poseDetector = createSession(context, options, "pose_detector.onnx");
         helmetClassifier = createSession(context, options, "helmet_classifier.onnx");
         vestClassifier = createSession(context, options, "vest_classifier.onnx");
         detectorInput = detector.getInputNames().iterator().next();
         standardDetectorInput = standardDetector.getInputNames().iterator().next();
+        segDetectorInput = segDetector.getInputNames().iterator().next();
+        obbDetectorInput = obbDetector.getInputNames().iterator().next();
+        poseDetectorInput = poseDetector.getInputNames().iterator().next();
         helmetInput = helmetClassifier.getInputNames().iterator().next();
         vestInput = vestClassifier.getInputNames().iterator().next();
     }
@@ -110,6 +129,35 @@ final class ModelRunner implements AutoCloseable {
             detections.add(new Detection(box.box, box.score, false, box.label));
         }
         return detections;
+    }
+
+    synchronized List<Detection> runSegment(Bitmap frame, int classId) throws OrtException {
+        int safeClassId = clamp(classId, 0, COCO_NAMES.length - 1);
+        Letterbox letterbox = letterbox(frame, DETECTOR_SIZE);
+        try {
+            return detectSegments(letterbox, frame.getWidth(), frame.getHeight(), safeClassId);
+        } finally {
+            letterbox.bitmap.recycle();
+        }
+    }
+
+    synchronized List<Detection> runObb(Bitmap frame, int classId) throws OrtException {
+        int safeClassId = clamp(classId, 0, OBB_NAMES.length - 1);
+        Letterbox letterbox = letterbox(frame, DETECTOR_SIZE);
+        try {
+            return detectObb(letterbox, frame.getWidth(), frame.getHeight(), safeClassId);
+        } finally {
+            letterbox.bitmap.recycle();
+        }
+    }
+
+    synchronized List<Detection> runPose(Bitmap frame) throws OrtException {
+        Letterbox letterbox = letterbox(frame, DETECTOR_SIZE);
+        try {
+            return detectPose(letterbox, frame.getWidth(), frame.getHeight());
+        } finally {
+            letterbox.bitmap.recycle();
+        }
     }
 
     synchronized List<Detection> runCustom(Bitmap frame, int classId) throws OrtException {
@@ -180,6 +228,114 @@ final class ModelRunner implements AutoCloseable {
                 }
             }
             return nms(candidates);
+        }
+    }
+
+    private RectF decodeBox(float[] row, Letterbox letterbox, int frameWidth, int frameHeight) {
+        float cx = row[0];
+        float cy = row[1];
+        float w = row[2];
+        float h = row[3];
+        RectF box = new RectF(
+                (cx - w * 0.5f - letterbox.padX) / letterbox.scale,
+                (cy - h * 0.5f - letterbox.padY) / letterbox.scale,
+                (cx + w * 0.5f - letterbox.padX) / letterbox.scale,
+                (cy + h * 0.5f - letterbox.padY) / letterbox.scale
+        );
+        box.left = Math.max(0, Math.min(frameWidth, box.left));
+        box.top = Math.max(0, Math.min(frameHeight, box.top));
+        box.right = Math.max(0, Math.min(frameWidth, box.right));
+        box.bottom = Math.max(0, Math.min(frameHeight, box.bottom));
+        return box;
+    }
+
+    private List<Detection> detectSegments(Letterbox letterbox, int frameWidth, int frameHeight, int targetClass)
+            throws OrtException {
+        try (OnnxTensor input = bitmapToTensor(letterbox.bitmap, DETECTOR_SIZE);
+             OrtSession.Result result = segDetector.run(Collections.singletonMap(segDetectorInput, input))) {
+            float[][] raw = toDetectionRows(result.get(0).getValue());
+            float[][][][] proto = (float[][][][]) result.get(1).getValue();
+            List<SegmentCandidate> candidates = new ArrayList<>();
+            for (float[] row : raw) {
+                if (row.length < 116) {
+                    continue;
+                }
+                float score = row[4 + targetClass];
+                if (score < STANDARD_THRESHOLD) {
+                    continue;
+                }
+                RectF box = decodeBox(row, letterbox, frameWidth, frameHeight);
+                if (box.width() < 8 || box.height() < 8) {
+                    continue;
+                }
+                float[] coeffs = new float[32];
+                System.arraycopy(row, 84, coeffs, 0, coeffs.length);
+                candidates.add(new SegmentCandidate(box, score, COCO_NAMES[targetClass], coeffs));
+            }
+            List<SegmentCandidate> kept = nmsSegments(candidates);
+            List<Detection> detections = new ArrayList<>();
+            for (SegmentCandidate candidate : kept) {
+                List<RectF> cells = buildMaskCells(candidate.box, candidate.coeffs, proto[0], letterbox, frameWidth, frameHeight);
+                detections.add(new Detection(candidate.box, candidate.score, false, candidate.label, null, null, cells));
+            }
+            return detections;
+        }
+    }
+
+    private List<Detection> detectObb(Letterbox letterbox, int frameWidth, int frameHeight, int targetClass)
+            throws OrtException {
+        try (OnnxTensor input = bitmapToTensor(letterbox.bitmap, DETECTOR_SIZE);
+             OrtSession.Result result = obbDetector.run(Collections.singletonMap(obbDetectorInput, input))) {
+            float[][] raw = toDetectionRows(result.get(0).getValue());
+            List<Detection> candidates = new ArrayList<>();
+            for (float[] row : raw) {
+                if (row.length < 20) {
+                    continue;
+                }
+                float score = row[4 + targetClass];
+                if (score < STANDARD_THRESHOLD) {
+                    continue;
+                }
+                float angle = row[19];
+                PointF[] polygon = decodeObbPolygon(row[0], row[1], row[2], row[3], angle, letterbox, frameWidth, frameHeight);
+                RectF bounds = boundsOf(polygon, frameWidth, frameHeight);
+                if (bounds.width() < 8 || bounds.height() < 8) {
+                    continue;
+                }
+                candidates.add(new Detection(bounds, score, false, OBB_NAMES[targetClass], polygon, null, null));
+            }
+            return nmsDetections(candidates);
+        }
+    }
+
+    private List<Detection> detectPose(Letterbox letterbox, int frameWidth, int frameHeight) throws OrtException {
+        try (OnnxTensor input = bitmapToTensor(letterbox.bitmap, DETECTOR_SIZE);
+             OrtSession.Result result = poseDetector.run(Collections.singletonMap(poseDetectorInput, input))) {
+            float[][] raw = toDetectionRows(result.get(0).getValue());
+            List<Detection> candidates = new ArrayList<>();
+            for (float[] row : raw) {
+                if (row.length < 56) {
+                    continue;
+                }
+                float score = row[4];
+                if (score < STANDARD_THRESHOLD) {
+                    continue;
+                }
+                RectF box = decodeBox(row, letterbox, frameWidth, frameHeight);
+                PointF[] keypoints = new PointF[17];
+                for (int i = 0; i < keypoints.length; i++) {
+                    int offset = 5 + i * 3;
+                    float confidence = row[offset + 2];
+                    if (confidence < 0.35f) {
+                        continue;
+                    }
+                    float x = (row[offset] - letterbox.padX) / letterbox.scale;
+                    float y = (row[offset + 1] - letterbox.padY) / letterbox.scale;
+                    keypoints[i] = new PointF(clamp(x, 0, frameWidth), clamp(y, 0, frameHeight));
+                }
+                candidates.add(new Detection(box, score, false, "person", null, keypoints, null));
+            }
+            return nmsDetections(candidates);
         }
     }
 
@@ -282,6 +438,112 @@ final class ModelRunner implements AutoCloseable {
         return kept;
     }
 
+    private static List<SegmentCandidate> nmsSegments(List<SegmentCandidate> boxes) {
+        boxes.sort((a, b) -> Float.compare(b.score, a.score));
+        List<SegmentCandidate> kept = new ArrayList<>();
+        boolean[] removed = new boolean[boxes.size()];
+        for (int i = 0; i < boxes.size(); i++) {
+            if (removed[i]) {
+                continue;
+            }
+            SegmentCandidate current = boxes.get(i);
+            kept.add(current);
+            for (int j = i + 1; j < boxes.size(); j++) {
+                if (!removed[j] && iou(current.box, boxes.get(j).box) > NMS_THRESHOLD) {
+                    removed[j] = true;
+                }
+            }
+        }
+        return kept;
+    }
+
+    private static List<Detection> nmsDetections(List<Detection> boxes) {
+        boxes.sort((a, b) -> Float.compare(b.score, a.score));
+        List<Detection> kept = new ArrayList<>();
+        boolean[] removed = new boolean[boxes.size()];
+        for (int i = 0; i < boxes.size(); i++) {
+            if (removed[i]) {
+                continue;
+            }
+            Detection current = boxes.get(i);
+            kept.add(current);
+            for (int j = i + 1; j < boxes.size(); j++) {
+                if (!removed[j] && iou(current.box, boxes.get(j).box) > NMS_THRESHOLD) {
+                    removed[j] = true;
+                }
+            }
+        }
+        return kept;
+    }
+
+    private static PointF[] decodeObbPolygon(float cx, float cy, float w, float h, float angle,
+                                             Letterbox letterbox, int frameWidth, int frameHeight) {
+        float cos = (float) Math.cos(angle);
+        float sin = (float) Math.sin(angle);
+        float hw = w * 0.5f;
+        float hh = h * 0.5f;
+        float[][] corners = {{-hw, -hh}, {hw, -hh}, {hw, hh}, {-hw, hh}};
+        PointF[] polygon = new PointF[4];
+        for (int i = 0; i < corners.length; i++) {
+            float x = cx + corners[i][0] * cos - corners[i][1] * sin;
+            float y = cy + corners[i][0] * sin + corners[i][1] * cos;
+            x = (x - letterbox.padX) / letterbox.scale;
+            y = (y - letterbox.padY) / letterbox.scale;
+            polygon[i] = new PointF(clamp(x, 0, frameWidth), clamp(y, 0, frameHeight));
+        }
+        return polygon;
+    }
+
+    private static RectF boundsOf(PointF[] points, int frameWidth, int frameHeight) {
+        float left = frameWidth;
+        float top = frameHeight;
+        float right = 0f;
+        float bottom = 0f;
+        for (PointF point : points) {
+            left = Math.min(left, point.x);
+            top = Math.min(top, point.y);
+            right = Math.max(right, point.x);
+            bottom = Math.max(bottom, point.y);
+        }
+        return new RectF(left, top, right, bottom);
+    }
+
+    private static List<RectF> buildMaskCells(RectF box, float[] coeffs, float[][][] proto,
+                                              Letterbox letterbox, int frameWidth, int frameHeight) {
+        List<RectF> cells = new ArrayList<>();
+        int channels = proto.length;
+        int maskH = proto[0].length;
+        int maskW = proto[0][0].length;
+        int step = 4;
+        for (int my = 0; my < maskH; my += step) {
+            for (int mx = 0; mx < maskW; mx += step) {
+                float modelX = (mx + step * 0.5f) * DETECTOR_SIZE / (float) maskW;
+                float modelY = (my + step * 0.5f) * DETECTOR_SIZE / (float) maskH;
+                float imageX = (modelX - letterbox.padX) / letterbox.scale;
+                float imageY = (modelY - letterbox.padY) / letterbox.scale;
+                if (!box.contains(imageX, imageY)) {
+                    continue;
+                }
+                float value = 0f;
+                for (int c = 0; c < channels && c < coeffs.length; c++) {
+                    value += coeffs[c] * proto[c][my][mx];
+                }
+                if (sigmoid(value) < 0.5f) {
+                    continue;
+                }
+                float cellW = step * DETECTOR_SIZE / (float) maskW / letterbox.scale;
+                float cellH = step * DETECTOR_SIZE / (float) maskH / letterbox.scale;
+                cells.add(new RectF(
+                        clamp(imageX - cellW * 0.5f, 0, frameWidth),
+                        clamp(imageY - cellH * 0.5f, 0, frameHeight),
+                        clamp(imageX + cellW * 0.5f, 0, frameWidth),
+                        clamp(imageY + cellH * 0.5f, 0, frameHeight)
+                ));
+            }
+        }
+        return cells;
+    }
+
     private static float iou(RectF a, RectF b) {
         float left = Math.max(a.left, b.left);
         float top = Math.max(a.top, b.top);
@@ -320,7 +582,15 @@ final class ModelRunner implements AutoCloseable {
         return (float) (Math.exp(values[index] - max) / expSum);
     }
 
+    private static float sigmoid(float value) {
+        return (float) (1.0 / (1.0 + Math.exp(-value)));
+    }
+
     private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static float clamp(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));
     }
 
@@ -372,6 +642,9 @@ final class ModelRunner implements AutoCloseable {
     public void close() throws Exception {
         detector.close();
         standardDetector.close();
+        segDetector.close();
+        obbDetector.close();
+        poseDetector.close();
         if (customDetector != null) {
             customDetector.close();
         }
@@ -389,6 +662,20 @@ final class ModelRunner implements AutoCloseable {
             this.box = box;
             this.score = score;
             this.label = label;
+        }
+    }
+
+    private static final class SegmentCandidate {
+        final RectF box;
+        final float score;
+        final String label;
+        final float[] coeffs;
+
+        SegmentCandidate(RectF box, float score, String label, float[] coeffs) {
+            this.box = box;
+            this.score = score;
+            this.label = label;
+            this.coeffs = coeffs;
         }
     }
 

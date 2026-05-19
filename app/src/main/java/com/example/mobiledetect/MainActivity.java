@@ -70,12 +70,13 @@ public class MainActivity extends ComponentActivity {
     private TextView customModelButton;
     private Spinner detectorSpinner;
     private Spinner safetyModeSpinner;
-    private Spinner standardClassSpinner;
+    private Spinner classSpinner;
+    private ArrayAdapter<String> classAdapter;
     private ScaleGestureDetector scaleGestureDetector;
     private volatile ModelRunner modelRunner;
     private volatile ModelRunner.DetectorMode detectorMode = ModelRunner.DetectorMode.SAFETY;
     private volatile ModelRunner.ClassifierMode classifierMode = ModelRunner.ClassifierMode.HELMET;
-    private volatile int standardClassId = 0;
+    private volatile int selectedClassId = 0;
     private volatile boolean customModelLoaded = false;
     private int lensFacing = CameraSelector.LENS_FACING_BACK;
     private Camera currentCamera;
@@ -162,15 +163,21 @@ public class MainActivity extends ComponentActivity {
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("人员安全识别 / YOLO11n 标准检测");
+        subtitle.setText("Detect / Seg / OBB / Pose");
         subtitle.setTextColor(0xFFBFDBFE);
         subtitle.setTextSize(12f);
         subtitle.setPadding(0, dp(2), 0, dp(12));
 
         Spinner cameraSpinner = createSpinner(new String[]{"后置主摄像头", "前置摄像头"});
-        detectorSpinner = createSpinner(new String[]{"人员安全模型", "标准 YOLO11n 模型", "自定义检测模型"});
+        detectorSpinner = createSpinner(new String[]{
+                "人员安全模型", "标准检测模型", "实例分割模型", "旋转框 OBB 模型", "姿态 Pose 模型", "自定义检测模型"
+        });
         safetyModeSpinner = createSpinner(new String[]{"安全帽检测", "反光衣检测"});
-        standardClassSpinner = createSpinner(ModelRunner.COCO_NAMES);
+        classAdapter = createAdapter(ModelRunner.COCO_NAMES);
+        classSpinner = new Spinner(this);
+        classSpinner.setAdapter(classAdapter);
+        classSpinner.setPadding(dp(12), dp(4), dp(12), dp(4));
+        classSpinner.setBackground(spinnerBackground());
         customModelButton = actionButton("选择 ONNX 检测模型");
         customModelButton.setOnClickListener(view -> modelPicker.launch(new String[]{"*/*"}));
 
@@ -196,17 +203,15 @@ public class MainActivity extends ComponentActivity {
         detectorSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position == 0) {
-                    detectorMode = ModelRunner.DetectorMode.SAFETY;
-                } else if (position == 1) {
-                    detectorMode = ModelRunner.DetectorMode.STANDARD;
-                } else if (customModelLoaded) {
-                    detectorMode = ModelRunner.DetectorMode.CUSTOM;
-                } else {
+                ModelRunner.DetectorMode nextMode = modeForPosition(position);
+                if (nextMode == ModelRunner.DetectorMode.CUSTOM && !customModelLoaded) {
                     statusView.setText("请先选择 ONNX 检测模型");
-                    detectorSpinner.setSelection(detectorMode == ModelRunner.DetectorMode.SAFETY ? 0 : 1);
+                    detectorSpinner.setSelection(positionForMode(detectorMode));
                     return;
                 }
+                detectorMode = nextMode;
+                selectedClassId = 0;
+                updateClassAdapter();
                 updateModeControls();
                 clearOverlay();
             }
@@ -228,10 +233,10 @@ public class MainActivity extends ComponentActivity {
             }
         });
 
-        standardClassSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+        classSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                standardClassId = position;
+                selectedClassId = position;
                 clearOverlay();
             }
 
@@ -250,7 +255,7 @@ public class MainActivity extends ComponentActivity {
         drawerContent.addView(label("安全检测类型"));
         drawerContent.addView(safetyModeSpinner, matchWrapParams());
         drawerContent.addView(label("检测类别"));
-        drawerContent.addView(standardClassSpinner, matchWrapParams());
+        drawerContent.addView(classSpinner, matchWrapParams());
 
         statusView = new TextView(this);
         statusView.setTextColor(0xFFDDEBFF);
@@ -277,6 +282,48 @@ public class MainActivity extends ComponentActivity {
         handleParams.gravity = Gravity.END | Gravity.TOP;
         handleParams.setMargins(0, dp(28), 0, 0);
         settingsDrawer.addView(drawerToggle, handleParams);
+    }
+
+    private ModelRunner.DetectorMode modeForPosition(int position) {
+        switch (position) {
+            case 1:
+                return ModelRunner.DetectorMode.STANDARD;
+            case 2:
+                return ModelRunner.DetectorMode.SEGMENT;
+            case 3:
+                return ModelRunner.DetectorMode.OBB;
+            case 4:
+                return ModelRunner.DetectorMode.POSE;
+            case 5:
+                return ModelRunner.DetectorMode.CUSTOM;
+            default:
+                return ModelRunner.DetectorMode.SAFETY;
+        }
+    }
+
+    private int positionForMode(ModelRunner.DetectorMode mode) {
+        switch (mode) {
+            case STANDARD:
+                return 1;
+            case SEGMENT:
+                return 2;
+            case OBB:
+                return 3;
+            case POSE:
+                return 4;
+            case CUSTOM:
+                return 5;
+            default:
+                return 0;
+        }
+    }
+
+    private void updateClassAdapter() {
+        String[] names = detectorMode == ModelRunner.DetectorMode.OBB ? ModelRunner.OBB_NAMES : ModelRunner.COCO_NAMES;
+        classAdapter.clear();
+        classAdapter.addAll(names);
+        classAdapter.notifyDataSetChanged();
+        classSpinner.setSelection(0);
     }
 
     private FrameLayout.LayoutParams drawerParams() {
@@ -311,12 +358,16 @@ public class MainActivity extends ComponentActivity {
 
     private Spinner createSpinner(String[] items) {
         Spinner spinner = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinner.setAdapter(adapter);
+        spinner.setAdapter(createAdapter(items));
         spinner.setPadding(dp(12), dp(4), dp(12), dp(4));
         spinner.setBackground(spinnerBackground());
         return spinner;
+    }
+
+    private ArrayAdapter<String> createAdapter(String[] items) {
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        return adapter;
     }
 
     private TextView label(String text) {
@@ -402,10 +453,11 @@ public class MainActivity extends ComponentActivity {
 
     private void updateModeControls() {
         boolean safetyMode = detectorMode == ModelRunner.DetectorMode.SAFETY;
+        boolean poseMode = detectorMode == ModelRunner.DetectorMode.POSE;
         safetyModeSpinner.setEnabled(safetyMode);
         safetyModeSpinner.setAlpha(safetyMode ? 1f : 0.45f);
-        standardClassSpinner.setEnabled(!safetyMode);
-        standardClassSpinner.setAlpha(safetyMode ? 0.45f : 1f);
+        classSpinner.setEnabled(!safetyMode && !poseMode);
+        classSpinner.setAlpha(!safetyMode && !poseMode ? 1f : 0.45f);
         customModelButton.setEnabled(modelRunner != null);
         customModelButton.setAlpha(modelRunner == null ? 0.45f : 1f);
     }
@@ -445,7 +497,7 @@ public class MainActivity extends ComponentActivity {
                 customModelLoaded = true;
                 detectorMode = ModelRunner.DetectorMode.CUSTOM;
                 runOnUiThread(() -> {
-                    detectorSpinner.setSelection(2);
+                    detectorSpinner.setSelection(positionForMode(ModelRunner.DetectorMode.CUSTOM));
                     statusView.setText("自定义模型已加载");
                     clearOverlay();
                     updateModeControls();
@@ -566,21 +618,35 @@ public class MainActivity extends ComponentActivity {
         Bitmap bitmap = null;
         try {
             bitmap = ImageUtils.imageProxyToBitmap(image);
-            ModelRunner.DetectorMode selectedDetectorMode = detectorMode;
-            int selectedStandardClassId = standardClassId;
+            ModelRunner.DetectorMode selectedMode = detectorMode;
+            int classId = selectedClassId;
             List<Detection> detections;
-            if (selectedDetectorMode == ModelRunner.DetectorMode.SAFETY) {
-                detections = runner.runSafety(bitmap, classifierMode);
-            } else if (selectedDetectorMode == ModelRunner.DetectorMode.CUSTOM) {
-                detections = runner.runCustom(bitmap, selectedStandardClassId);
-            } else {
-                detections = runner.runStandard(bitmap, selectedStandardClassId);
+            switch (selectedMode) {
+                case SAFETY:
+                    detections = runner.runSafety(bitmap, classifierMode);
+                    break;
+                case SEGMENT:
+                    detections = runner.runSegment(bitmap, classId);
+                    break;
+                case OBB:
+                    detections = runner.runObb(bitmap, classId);
+                    break;
+                case POSE:
+                    detections = runner.runPose(bitmap);
+                    break;
+                case CUSTOM:
+                    detections = runner.runCustom(bitmap, classId);
+                    break;
+                case STANDARD:
+                default:
+                    detections = runner.runStandard(bitmap, classId);
+                    break;
             }
             int width = bitmap.getWidth();
             int height = bitmap.getHeight();
             runOnUiThread(() -> {
                 overlayView.setDetections(detections, width, height);
-                statusView.setText(statusText(selectedDetectorMode, selectedStandardClassId, detections.size()));
+                statusView.setText(statusText(selectedMode, classId, detections.size()));
             });
         } catch (Exception e) {
             runOnUiThread(() -> statusView.setText("推理失败: " + e.getMessage()));
@@ -593,12 +659,19 @@ public class MainActivity extends ComponentActivity {
         }
     }
 
-    private String statusText(ModelRunner.DetectorMode selectedDetectorMode, int selectedStandardClassId, int count) {
-        if (selectedDetectorMode == ModelRunner.DetectorMode.SAFETY) {
+    private String statusText(ModelRunner.DetectorMode mode, int classId, int count) {
+        if (mode == ModelRunner.DetectorMode.SAFETY) {
             return "人员: " + count;
         }
-        String prefix = selectedDetectorMode == ModelRunner.DetectorMode.CUSTOM ? "自定义 " : "";
-        return prefix + ModelRunner.COCO_NAMES[selectedStandardClassId] + ": " + count;
+        if (mode == ModelRunner.DetectorMode.POSE) {
+            return "姿态 person: " + count;
+        }
+        if (mode == ModelRunner.DetectorMode.OBB) {
+            return "OBB " + ModelRunner.OBB_NAMES[Math.min(classId, ModelRunner.OBB_NAMES.length - 1)] + ": " + count;
+        }
+        String prefix = mode == ModelRunner.DetectorMode.SEGMENT ? "分割 "
+                : mode == ModelRunner.DetectorMode.CUSTOM ? "自定义 " : "";
+        return prefix + ModelRunner.COCO_NAMES[Math.min(classId, ModelRunner.COCO_NAMES.length - 1)] + ": " + count;
     }
 
     private int dp(int value) {

@@ -19,6 +19,9 @@
 - 支持 YOLO11n 实例分割模型 `seg_detector.onnx`。
 - 支持 YOLO11n 旋转框模型 `obb_detector.onnx`。
 - 支持 YOLO11n 姿态估计模型 `pose_detector.onnx`。
+- 支持 YOLO11n 分类模型 `yolo_classifier.onnx`。
+- 在标准检测模型识别目标后，会裁剪检测框区域送入分类模型。
+- 分类置信度超过 `0.6` 时认为分类成功，并绘制绿色分类框。
 - 支持手动选择新的 ONNX 检测模型文件。
 - 正常目标使用蓝色框显示。
 - 未戴安全帽、未穿反光衣等违规目标使用红色框显示。
@@ -56,6 +59,14 @@ App 当前内置以下 ONNX 模型：
 - `app/src/main/assets/pose_detector.onnx`
   - YOLO11n Pose 姿态估计模型。
   - App 会绘制人体检测框、关键点和骨架。
+
+- `app/src/main/assets/yolo_classifier.onnx`
+  - YOLO11n 分类模型。
+  - 标准检测模型识别目标后，会裁剪目标区域进行二次分类。
+  - 分类置信度超过 `0.6` 时显示绿色分类框。
+
+- `app/src/main/assets/cls_labels.txt`
+  - 分类模型的 ImageNet 类别名称。
 
 ## 自定义模型
 

@@ -66,7 +66,7 @@ public class OverlayView extends View {
         float dy = (getHeight() - sourceHeight * scale) * 0.5f;
 
         for (Detection detection : detections) {
-            boxPaint.setColor(detection.violation ? Color.rgb(220, 38, 38) : Color.rgb(37, 99, 235));
+            boxPaint.setColor(detection.color);
             drawMaskCells(canvas, detection, scale, dx, dy);
             drawPolygon(canvas, detection, scale, dx, dy);
             drawKeypoints(canvas, detection, scale, dx, dy);

@@ -12,6 +12,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -38,6 +40,7 @@ final class ModelRunner implements AutoCloseable {
     private static final float STANDARD_THRESHOLD = 0.35f;
     private static final float NMS_THRESHOLD = 0.45f;
     private static final float CLASS_THRESHOLD = 0.45f;
+    private static final float GENERIC_CLASS_THRESHOLD = 0.60f;
     static final String[] COCO_NAMES = {
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
             "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
@@ -64,6 +67,7 @@ final class ModelRunner implements AutoCloseable {
     private final OrtSession segDetector;
     private final OrtSession obbDetector;
     private final OrtSession poseDetector;
+    private final OrtSession genericClassifier;
     private final OrtSession helmetClassifier;
     private final OrtSession vestClassifier;
     private final String detectorInput;
@@ -71,8 +75,10 @@ final class ModelRunner implements AutoCloseable {
     private final String segDetectorInput;
     private final String obbDetectorInput;
     private final String poseDetectorInput;
+    private final String genericClassifierInput;
     private final String helmetInput;
     private final String vestInput;
+    private final String[] genericClassNames;
     private OrtSession customDetector;
     private String customDetectorInput;
 
@@ -85,6 +91,7 @@ final class ModelRunner implements AutoCloseable {
         segDetector = createSession(context, options, "seg_detector.onnx");
         obbDetector = createSession(context, options, "obb_detector.onnx");
         poseDetector = createSession(context, options, "pose_detector.onnx");
+        genericClassifier = createSession(context, options, "yolo_classifier.onnx");
         helmetClassifier = createSession(context, options, "helmet_classifier.onnx");
         vestClassifier = createSession(context, options, "vest_classifier.onnx");
         detectorInput = detector.getInputNames().iterator().next();
@@ -92,8 +99,10 @@ final class ModelRunner implements AutoCloseable {
         segDetectorInput = segDetector.getInputNames().iterator().next();
         obbDetectorInput = obbDetector.getInputNames().iterator().next();
         poseDetectorInput = poseDetector.getInputNames().iterator().next();
+        genericClassifierInput = genericClassifier.getInputNames().iterator().next();
         helmetInput = helmetClassifier.getInputNames().iterator().next();
         vestInput = vestClassifier.getInputNames().iterator().next();
+        genericClassNames = loadLabels(context, "cls_labels.txt");
     }
 
     synchronized List<Detection> runSafety(Bitmap frame, ClassifierMode mode) throws OrtException {
@@ -127,6 +136,11 @@ final class ModelRunner implements AutoCloseable {
         List<Detection> detections = new ArrayList<>();
         for (PersonBox box : boxes) {
             detections.add(new Detection(box.box, box.score, false, box.label));
+            Classification classification = classifyGeneric(frame, box.box);
+            if (classification.score >= GENERIC_CLASS_THRESHOLD) {
+                detections.add(new Detection(insetBox(box.box, 4f), classification.score, false,
+                        "cls: " + classification.label, Color.rgb(34, 197, 94)));
+            }
         }
         return detections;
     }
@@ -340,13 +354,7 @@ final class ModelRunner implements AutoCloseable {
     }
 
     private Classification classify(Bitmap frame, RectF box, ClassifierMode mode) throws OrtException {
-        int left = clamp((int) box.left, 0, frame.getWidth() - 1);
-        int top = clamp((int) box.top, 0, frame.getHeight() - 1);
-        int right = clamp((int) box.right, left + 1, frame.getWidth());
-        int bottom = clamp((int) box.bottom, top + 1, frame.getHeight());
-        Bitmap crop = Bitmap.createBitmap(frame, left, top, right - left, bottom - top);
-        Bitmap resized = Bitmap.createScaledBitmap(crop, CLASSIFIER_SIZE, CLASSIFIER_SIZE, true);
-        crop.recycle();
+        Bitmap resized = cropAndResize(frame, box, CLASSIFIER_SIZE);
 
         OrtSession session = mode == ClassifierMode.HELMET ? helmetClassifier : vestClassifier;
         String inputName = mode == ClassifierMode.HELMET ? helmetInput : vestInput;
@@ -363,6 +371,39 @@ final class ModelRunner implements AutoCloseable {
             String[] names = {"Novest", "Other", "Vest"};
             return new Classification(names[best], confidence, best == 0);
         }
+    }
+
+    private Classification classifyGeneric(Bitmap frame, RectF box) throws OrtException {
+        Bitmap resized = cropAndResize(frame, box, CLASSIFIER_SIZE);
+        try (OnnxTensor input = bitmapToTensor(resized, CLASSIFIER_SIZE);
+             OrtSession.Result result = genericClassifier.run(Collections.singletonMap(genericClassifierInput, input))) {
+            resized.recycle();
+            float[] scores = toClassificationScores(result.get(0).getValue());
+            int best = argmax(scores);
+            float confidence = confidence(scores, best);
+            String label = best >= 0 && best < genericClassNames.length ? genericClassNames[best] : "class_" + best;
+            return new Classification(label, confidence, false);
+        }
+    }
+
+    private static Bitmap cropAndResize(Bitmap frame, RectF box, int size) {
+        int left = clamp((int) box.left, 0, frame.getWidth() - 1);
+        int top = clamp((int) box.top, 0, frame.getHeight() - 1);
+        int right = clamp((int) box.right, left + 1, frame.getWidth());
+        int bottom = clamp((int) box.bottom, top + 1, frame.getHeight());
+        Bitmap crop = Bitmap.createBitmap(frame, left, top, right - left, bottom - top);
+        Bitmap resized = Bitmap.createScaledBitmap(crop, size, size, true);
+        crop.recycle();
+        return resized;
+    }
+
+    private static RectF insetBox(RectF box, float pixels) {
+        RectF inset = new RectF(box);
+        inset.inset(pixels, pixels);
+        if (inset.width() <= 0 || inset.height() <= 0) {
+            return new RectF(box);
+        }
+        return inset;
     }
 
     private static OnnxTensor bitmapToTensor(Bitmap bitmap, int size) throws OrtException {
@@ -638,6 +679,20 @@ final class ModelRunner implements AutoCloseable {
         return file;
     }
 
+    private static String[] loadLabels(Context context, String name) throws Exception {
+        List<String> labels = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(context.getAssets().open(name)))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.trim().isEmpty()) {
+                    labels.add(line.trim());
+                }
+            }
+        }
+        return labels.toArray(new String[0]);
+    }
+
     @Override
     public void close() throws Exception {
         detector.close();
@@ -645,6 +700,7 @@ final class ModelRunner implements AutoCloseable {
         segDetector.close();
         obbDetector.close();
         poseDetector.close();
+        genericClassifier.close();
         if (customDetector != null) {
             customDetector.close();
         }

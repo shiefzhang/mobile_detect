@@ -13,6 +13,11 @@ android {
         versionCode 1
         versionName "1.0"
     }
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "MobileDetect-${variant.name}-${variant.versionName}.apk"
+        }
+    }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

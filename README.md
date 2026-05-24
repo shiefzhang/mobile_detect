@@ -92,6 +92,59 @@ yolo export model=your_model.pt format=onnx imgsz=640 opset=12 simplify=False dy
 yolo export model=your_classifier.pt format=onnx imgsz=320 opset=12 simplify=False dynamic=False
 ```
 
+## 模型导出脚本
+
+项目根目录提供了 `export_onnx.py`，用于把 Ultralytics `.pt` 权重导出为 ONNX、TensorRT Engine 或 TFLite。
+
+查看参数：
+
+```bash
+python export_onnx.py --help
+```
+
+导出 ONNX：
+
+```bash
+python export_onnx.py models/05person_best11m.pt --format onnx --imgsz 640
+```
+
+导出分类模型 ONNX：
+
+```bash
+python export_onnx.py models/human_hat_cls_v4_bestm.pt --format onnx --imgsz 320
+```
+
+导出 Jetson 可用的 TensorRT Engine：
+
+```bash
+python export_onnx.py models/05person_best11m.pt --format engine --imgsz 640 --device 0 --half
+```
+
+导出 TFLite：
+
+```bash
+python export_onnx.py models/human_hat_cls_v4_bestm.pt --format tflite --imgsz 320
+```
+
+导出 INT8 TFLite 时需要提供校准数据：
+
+```bash
+python export_onnx.py models/05person_best11m.pt --format tflite --imgsz 640 --int8 --data data.yaml
+```
+
+常用参数：
+
+- `--format onnx|engine|tflite`：导出格式，默认 `onnx`。
+- `--imgsz`：导出输入尺寸，检测模型通常用 `640`，分类模型通常用 `320`。
+- `--output-dir`：指定输出目录，避免覆盖原目录模型。
+- `--simplify`：简化 ONNX 图，使用前建议先验证 App 或推理端能正常加载。
+- `--dynamic`：导出动态输入尺寸。
+- `--half`：导出 FP16 模型，Jetson TensorRT Engine 常用。
+- `--int8`：导出 INT8 模型，通常需要 `--data` 提供校准数据。
+- `--workspace`：TensorRT workspace 大小，单位 GiB。
+
+注意：TensorRT `.engine` 与 Jetson 硬件、CUDA 和 TensorRT 版本强绑定，建议直接在目标 Jetson 设备上生成，不要在其他机器生成后拷贝使用。
+
 ## 项目结构
 
 ```text
@@ -109,7 +162,7 @@ app/src/main/java/com/example/mobiledetect/
   - 详细说明模型检测逻辑和后续业务规则扩展方式。
 
 - `export_onnx.py`
-  - 本地模型导出辅助脚本。
+  - 本地模型导出辅助脚本，支持 ONNX、TensorRT Engine 和 TFLite。
 
 - `app/src/main/assets/`
   - App 实际加载的 ONNX 模型资源。

@@ -61,55 +61,42 @@ final class ModelRunner implements AutoCloseable {
             "soccer ball field", "swimming pool"
     };
 
+    private final Context context;
     private final OrtEnvironment env;
-    private final OrtSession detector;
-    private final OrtSession standardDetector;
-    private final OrtSession segDetector;
-    private final OrtSession obbDetector;
-    private final OrtSession poseDetector;
-    private final OrtSession genericClassifier;
-    private final OrtSession helmetClassifier;
-    private final OrtSession vestClassifier;
-    private final String detectorInput;
-    private final String standardDetectorInput;
-    private final String segDetectorInput;
-    private final String obbDetectorInput;
-    private final String poseDetectorInput;
-    private final String genericClassifierInput;
-    private final String helmetInput;
-    private final String vestInput;
+    private final OrtSession.SessionOptions options;
     private final String[] genericClassNames;
+    private OrtSession detector;
+    private OrtSession standardDetector;
+    private OrtSession segDetector;
+    private OrtSession obbDetector;
+    private OrtSession poseDetector;
+    private OrtSession genericClassifier;
+    private OrtSession helmetClassifier;
+    private OrtSession vestClassifier;
     private OrtSession customDetector;
+    private String detectorInput;
+    private String standardDetectorInput;
+    private String segDetectorInput;
+    private String obbDetectorInput;
+    private String poseDetectorInput;
+    private String genericClassifierInput;
+    private String helmetInput;
+    private String vestInput;
     private String customDetectorInput;
 
     ModelRunner(Context context) throws Exception {
+        this.context = context.getApplicationContext();
         env = OrtEnvironment.getEnvironment();
-        OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+        options = new OrtSession.SessionOptions();
         options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
-        detector = createSession(context, options, "person_detector.onnx");
-        standardDetector = createSession(context, options, "standard_detector.onnx");
-        segDetector = createSession(context, options, "seg_detector.onnx");
-        obbDetector = createSession(context, options, "obb_detector.onnx");
-        poseDetector = createSession(context, options, "pose_detector.onnx");
-        genericClassifier = createSession(context, options, "yolo_classifier.onnx");
-        helmetClassifier = createSession(context, options, "helmet_classifier.onnx");
-        vestClassifier = createSession(context, options, "vest_classifier.onnx");
-        detectorInput = detector.getInputNames().iterator().next();
-        standardDetectorInput = standardDetector.getInputNames().iterator().next();
-        segDetectorInput = segDetector.getInputNames().iterator().next();
-        obbDetectorInput = obbDetector.getInputNames().iterator().next();
-        poseDetectorInput = poseDetector.getInputNames().iterator().next();
-        genericClassifierInput = genericClassifier.getInputNames().iterator().next();
-        helmetInput = helmetClassifier.getInputNames().iterator().next();
-        vestInput = vestClassifier.getInputNames().iterator().next();
-        genericClassNames = loadLabels(context, "cls_labels.txt");
+        genericClassNames = loadLabels(this.context, "cls_labels.txt");
     }
 
-    synchronized List<Detection> runSafety(Bitmap frame, ClassifierMode mode) throws OrtException {
+    synchronized List<Detection> runSafety(Bitmap frame, ClassifierMode mode) throws Exception {
         Letterbox letterbox = letterbox(frame, DETECTOR_SIZE);
         List<PersonBox> people;
         try {
-            people = detectObjects(detector, detectorInput, letterbox, frame.getWidth(), frame.getHeight(),
+            people = detectObjects(personDetector(), detectorInput, letterbox, frame.getWidth(), frame.getHeight(),
                     PERSON_CLASS, 5, PERSON_THRESHOLD, "person");
         } finally {
             letterbox.bitmap.recycle();
@@ -123,12 +110,12 @@ final class ModelRunner implements AutoCloseable {
         return detections;
     }
 
-    synchronized List<Detection> runStandard(Bitmap frame, int classId) throws OrtException {
+    synchronized List<Detection> runStandard(Bitmap frame, int classId) throws Exception {
         int safeClassId = clamp(classId, 0, COCO_NAMES.length - 1);
         Letterbox letterbox = letterbox(frame, DETECTOR_SIZE);
         List<PersonBox> boxes;
         try {
-            boxes = detectObjects(standardDetector, standardDetectorInput, letterbox, frame.getWidth(), frame.getHeight(),
+            boxes = detectObjects(standardModel(), standardDetectorInput, letterbox, frame.getWidth(), frame.getHeight(),
                     safeClassId, COCO_NAMES.length, STANDARD_THRESHOLD, COCO_NAMES[safeClassId]);
         } finally {
             letterbox.bitmap.recycle();
@@ -145,7 +132,7 @@ final class ModelRunner implements AutoCloseable {
         return detections;
     }
 
-    synchronized List<Detection> runSegment(Bitmap frame, int classId) throws OrtException {
+    synchronized List<Detection> runSegment(Bitmap frame, int classId) throws Exception {
         int safeClassId = clamp(classId, 0, COCO_NAMES.length - 1);
         Letterbox letterbox = letterbox(frame, DETECTOR_SIZE);
         try {
@@ -155,7 +142,7 @@ final class ModelRunner implements AutoCloseable {
         }
     }
 
-    synchronized List<Detection> runObb(Bitmap frame, int classId) throws OrtException {
+    synchronized List<Detection> runObb(Bitmap frame, int classId) throws Exception {
         int safeClassId = clamp(classId, 0, OBB_NAMES.length - 1);
         Letterbox letterbox = letterbox(frame, DETECTOR_SIZE);
         try {
@@ -165,7 +152,7 @@ final class ModelRunner implements AutoCloseable {
         }
     }
 
-    synchronized List<Detection> runPose(Bitmap frame) throws OrtException {
+    synchronized List<Detection> runPose(Bitmap frame) throws Exception {
         Letterbox letterbox = letterbox(frame, DETECTOR_SIZE);
         try {
             return detectPose(letterbox, frame.getWidth(), frame.getHeight());
@@ -195,8 +182,6 @@ final class ModelRunner implements AutoCloseable {
     }
 
     synchronized void loadCustomDetector(File modelFile) throws OrtException {
-        OrtSession.SessionOptions options = new OrtSession.SessionOptions();
-        options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
         OrtSession newSession = env.createSession(modelFile.getAbsolutePath(), options);
         String newInput = newSession.getInputNames().iterator().next();
         OrtSession oldSession = customDetector;
@@ -264,9 +249,9 @@ final class ModelRunner implements AutoCloseable {
     }
 
     private List<Detection> detectSegments(Letterbox letterbox, int frameWidth, int frameHeight, int targetClass)
-            throws OrtException {
+            throws Exception {
         try (OnnxTensor input = bitmapToTensor(letterbox.bitmap, DETECTOR_SIZE);
-             OrtSession.Result result = segDetector.run(Collections.singletonMap(segDetectorInput, input))) {
+             OrtSession.Result result = segmentModel().run(Collections.singletonMap(segDetectorInput, input))) {
             float[][] raw = toDetectionRows(result.get(0).getValue());
             float[][][][] proto = (float[][][][]) result.get(1).getValue();
             List<SegmentCandidate> candidates = new ArrayList<>();
@@ -297,9 +282,9 @@ final class ModelRunner implements AutoCloseable {
     }
 
     private List<Detection> detectObb(Letterbox letterbox, int frameWidth, int frameHeight, int targetClass)
-            throws OrtException {
+            throws Exception {
         try (OnnxTensor input = bitmapToTensor(letterbox.bitmap, DETECTOR_SIZE);
-             OrtSession.Result result = obbDetector.run(Collections.singletonMap(obbDetectorInput, input))) {
+             OrtSession.Result result = obbModel().run(Collections.singletonMap(obbDetectorInput, input))) {
             float[][] raw = toDetectionRows(result.get(0).getValue());
             List<Detection> candidates = new ArrayList<>();
             for (float[] row : raw) {
@@ -322,9 +307,9 @@ final class ModelRunner implements AutoCloseable {
         }
     }
 
-    private List<Detection> detectPose(Letterbox letterbox, int frameWidth, int frameHeight) throws OrtException {
+    private List<Detection> detectPose(Letterbox letterbox, int frameWidth, int frameHeight) throws Exception {
         try (OnnxTensor input = bitmapToTensor(letterbox.bitmap, DETECTOR_SIZE);
-             OrtSession.Result result = poseDetector.run(Collections.singletonMap(poseDetectorInput, input))) {
+             OrtSession.Result result = poseModel().run(Collections.singletonMap(poseDetectorInput, input))) {
             float[][] raw = toDetectionRows(result.get(0).getValue());
             List<Detection> candidates = new ArrayList<>();
             for (float[] row : raw) {
@@ -353,10 +338,10 @@ final class ModelRunner implements AutoCloseable {
         }
     }
 
-    private Classification classify(Bitmap frame, RectF box, ClassifierMode mode) throws OrtException {
+    private Classification classify(Bitmap frame, RectF box, ClassifierMode mode) throws Exception {
         Bitmap resized = cropAndResize(frame, box, CLASSIFIER_SIZE);
 
-        OrtSession session = mode == ClassifierMode.HELMET ? helmetClassifier : vestClassifier;
+        OrtSession session = mode == ClassifierMode.HELMET ? helmetModel() : vestModel();
         String inputName = mode == ClassifierMode.HELMET ? helmetInput : vestInput;
         try (OnnxTensor input = bitmapToTensor(resized, CLASSIFIER_SIZE);
              OrtSession.Result result = session.run(Collections.singletonMap(inputName, input))) {
@@ -373,10 +358,10 @@ final class ModelRunner implements AutoCloseable {
         }
     }
 
-    private Classification classifyGeneric(Bitmap frame, RectF box) throws OrtException {
+    private Classification classifyGeneric(Bitmap frame, RectF box) throws Exception {
         Bitmap resized = cropAndResize(frame, box, CLASSIFIER_SIZE);
         try (OnnxTensor input = bitmapToTensor(resized, CLASSIFIER_SIZE);
-             OrtSession.Result result = genericClassifier.run(Collections.singletonMap(genericClassifierInput, input))) {
+             OrtSession.Result result = genericClassifier().run(Collections.singletonMap(genericClassifierInput, input))) {
             resized.recycle();
             float[] scores = toClassificationScores(result.get(0).getValue());
             int best = argmax(scores);
@@ -635,6 +620,70 @@ final class ModelRunner implements AutoCloseable {
         return Math.max(min, Math.min(max, value));
     }
 
+    private OrtSession personDetector() throws Exception {
+        if (detector == null) {
+            detector = createSession(context, options, "person_detector.onnx");
+            detectorInput = detector.getInputNames().iterator().next();
+        }
+        return detector;
+    }
+
+    private OrtSession standardModel() throws Exception {
+        if (standardDetector == null) {
+            standardDetector = createSession(context, options, "standard_detector.onnx");
+            standardDetectorInput = standardDetector.getInputNames().iterator().next();
+        }
+        return standardDetector;
+    }
+
+    private OrtSession segmentModel() throws Exception {
+        if (segDetector == null) {
+            segDetector = createSession(context, options, "seg_detector.onnx");
+            segDetectorInput = segDetector.getInputNames().iterator().next();
+        }
+        return segDetector;
+    }
+
+    private OrtSession obbModel() throws Exception {
+        if (obbDetector == null) {
+            obbDetector = createSession(context, options, "obb_detector.onnx");
+            obbDetectorInput = obbDetector.getInputNames().iterator().next();
+        }
+        return obbDetector;
+    }
+
+    private OrtSession poseModel() throws Exception {
+        if (poseDetector == null) {
+            poseDetector = createSession(context, options, "pose_detector.onnx");
+            poseDetectorInput = poseDetector.getInputNames().iterator().next();
+        }
+        return poseDetector;
+    }
+
+    private OrtSession genericClassifier() throws Exception {
+        if (genericClassifier == null) {
+            genericClassifier = createSession(context, options, "yolo_classifier.onnx");
+            genericClassifierInput = genericClassifier.getInputNames().iterator().next();
+        }
+        return genericClassifier;
+    }
+
+    private OrtSession helmetModel() throws Exception {
+        if (helmetClassifier == null) {
+            helmetClassifier = createSession(context, options, "helmet_classifier.onnx");
+            helmetInput = helmetClassifier.getInputNames().iterator().next();
+        }
+        return helmetClassifier;
+    }
+
+    private OrtSession vestModel() throws Exception {
+        if (vestClassifier == null) {
+            vestClassifier = createSession(context, options, "vest_classifier.onnx");
+            vestInput = vestClassifier.getInputNames().iterator().next();
+        }
+        return vestClassifier;
+    }
+
     private OrtSession createSession(Context context, OrtSession.SessionOptions options, String name) throws Exception {
         File model = assetFile(context, name);
         try {
@@ -695,17 +744,34 @@ final class ModelRunner implements AutoCloseable {
 
     @Override
     public void close() throws Exception {
-        detector.close();
-        standardDetector.close();
-        segDetector.close();
-        obbDetector.close();
-        poseDetector.close();
-        genericClassifier.close();
+        if (detector != null) {
+            detector.close();
+        }
+        if (standardDetector != null) {
+            standardDetector.close();
+        }
+        if (segDetector != null) {
+            segDetector.close();
+        }
+        if (obbDetector != null) {
+            obbDetector.close();
+        }
+        if (poseDetector != null) {
+            poseDetector.close();
+        }
+        if (genericClassifier != null) {
+            genericClassifier.close();
+        }
         if (customDetector != null) {
             customDetector.close();
         }
-        helmetClassifier.close();
-        vestClassifier.close();
+        if (helmetClassifier != null) {
+            helmetClassifier.close();
+        }
+        if (vestClassifier != null) {
+            vestClassifier.close();
+        }
+        options.close();
         env.close();
     }
 

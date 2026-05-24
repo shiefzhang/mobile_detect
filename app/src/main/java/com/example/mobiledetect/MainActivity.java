@@ -365,7 +365,11 @@ public class MainActivity extends ComponentActivity {
     }
 
     private ArrayAdapter<String> createAdapter(String[] items) {
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
+        ArrayList<String> values = new ArrayList<>();
+        for (String item : items) {
+            values.add(item);
+        }
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, values);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         return adapter;
     }
@@ -471,7 +475,7 @@ public class MainActivity extends ComponentActivity {
             try {
                 modelRunner = new ModelRunner(getApplicationContext());
                 runOnUiThread(() -> {
-                    statusView.setText("模型已加载");
+                    statusView.setText("推理引擎已就绪");
                     updateModeControls();
                 });
             } catch (Exception e) {
